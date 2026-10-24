@@ -55,7 +55,12 @@ function assertScanReport(data) {
 
 function apiErrorMessage(data) {
   const detail = data?.detail;
-  if (typeof detail === "string") return detail;
+  if (typeof detail === "string") {
+    if (/^\s*<!doctype\s+html\b|^\s*<html\b/i.test(detail)) {
+      return "The analyzer returned a web page instead of scan data. Check the API endpoint and try again.";
+    }
+    return detail;
+  }
   if (Array.isArray(detail)) {
     return detail.map((item) => {
       const field = Array.isArray(item.loc) ? item.loc.filter((part) => part !== "body").join(".") : "";
@@ -194,6 +199,70 @@ function normalizeScanReport(data, submittedUrl) {
   };
 }
 
+function renderRecommendation(value, level) {
+  const target = byId("recommendation-text");
+  const text = String(value || "")
+    .replace(/\*{1,2}/g, "")
+    .replace(/(^|\n)\s*[-*]\s+/g, "$1")
+    .replace(/\s+[-*]\s+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const openingWarning = text.match(/^Do not click(?:\s+(?:the|this)\s+link)?[.!?]?\s*/i);
+  const showClickWarning = level === "medium" || level === "high" || Boolean(openingWarning);
+
+  target.replaceChildren();
+  if (!showClickWarning) {
+    target.textContent = text;
+    return;
+  }
+
+  const emphasis = document.createElement("strong");
+  emphasis.className = "warning-emphasis";
+  emphasis.textContent = "DO NOT CLICK THIS LINK";
+  target.append(emphasis);
+
+  const remaining = openingWarning
+    ? text.slice(openingWarning[0].length).replace(/^[\s,;:—-]+/, "")
+    : text;
+  if (remaining) target.append(document.createTextNode(` — ${remaining}`));
+}
+
+function renderAgentExplanation(value) {
+  const target = byId("agent-explanation");
+  const lines = String(value || "").split(/(\r?\n)/);
+  let inRecommendedActions = false;
+  let warningEmphasized = false;
+
+  target.replaceChildren();
+  for (const line of lines) {
+    if (/^\r?\n$/.test(line)) {
+      target.append(document.createTextNode(line));
+      continue;
+    }
+
+    const cleanLine = line.replace(/\*{1,2}/g, "");
+    if (/^\s*Recommended action\s*:/i.test(cleanLine)) {
+      inRecommendedActions = true;
+    }
+
+    const warning = inRecommendedActions && !warningEmphasized
+      ? cleanLine.match(/Do not click\b/i)
+      : null;
+    if (!warning) {
+      target.append(document.createTextNode(cleanLine));
+      continue;
+    }
+
+    const warningIndex = warning.index;
+    target.append(document.createTextNode(cleanLine.slice(0, warningIndex)));
+    const emphasis = document.createElement("strong");
+    emphasis.className = "warning-emphasis";
+    emphasis.textContent = "DO NOT CLICK";
+    target.append(emphasis, document.createTextNode(cleanLine.slice(warningIndex + warning[0].length)));
+    warningEmphasized = true;
+  }
+}
+
 function renderReport(data) {
   assertScanReport(data);
   emptyReport.hidden = true;
@@ -217,18 +286,8 @@ function renderReport(data) {
   byId("score-meter").setAttribute("aria-valuenow", String(data.risk_score));
   byId("score-caption").textContent = data.score_label;
   byId("scanned-url").textContent = data.submitted_url;
-  const intel = data.threat_intelligence;
-  const intelNotes = {
-    not_configured: "Add a Safe Browsing key",
-    unavailable: "Passive checks still ran",
-    clean: "No match does not prove safety",
-  };
-  byId("intel-status").textContent = intel.label;
-  byId("intel-status-note").textContent = intel.status === "match"
-    ? intel.detail || "Reported by the reputation provider"
-    : intelNotes[intel.status] || "";
   byId("scan-time").textContent = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(data.scanned_at));
-  byId("recommendation-text").textContent = data.recommendation;
+  renderRecommendation(data.recommendation, data.level);
 
   const agentReview = byId("agent-review");
   const agent = data.agent;
@@ -245,9 +304,9 @@ function renderReport(data) {
   };
   agentReview.dataset.status = agent.status || "unavailable";
   byId("agent-review-status").textContent = agentLabels[agent.status] || "STATUS UNKNOWN";
-  byId("agent-explanation").textContent = agent.status === "complete" && agent.explanation
+  renderAgentExplanation(agent.status === "complete" && agent.explanation
     ? agent.explanation
-    : agentMessages[agent.status] || "The evidence-based scan is complete; the AI review status is unavailable.";
+    : agentMessages[agent.status] || "The evidence-based scan is complete; the AI review status is unavailable.");
 
   const list = byId("findings-list");
   list.replaceChildren();
@@ -369,6 +428,15 @@ form.addEventListener("submit", async (event) => {
           body: JSON.stringify({ url: url, message: extraMessage }),
         });
       }
+    }
+
+    if (endpointTried !== LOCAL_FALLBACK_URL && !response.ok) {
+      endpointTried = LOCAL_FALLBACK_URL;
+      response = await fetch(LOCAL_FALLBACK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url, message: extraMessage }),
+      });
     }
 
     let rawData;
