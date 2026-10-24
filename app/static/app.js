@@ -1,5 +1,9 @@
 // Endpoint configuration
-const ENDPOINT_URL = window.LINKGUARD_API_URL || localStorage.getItem("LINKGUARD_API_URL") || "https://veyl.onrender.com/analyze";
+const SAVED_ENDPOINT_URL = localStorage.getItem("LINKGUARD_API_URL");
+const CONFIGURED_ENDPOINT_URL = window.LINKGUARD_API_URL || SAVED_ENDPOINT_URL;
+const ENDPOINT_URL = isSelfProxyEndpoint(CONFIGURED_ENDPOINT_URL)
+  ? "/api/scan"
+  : CONFIGURED_ENDPOINT_URL || "/api/scan";
 const PROXY_URL = "/api/analyze-proxy";
 const LOCAL_FALLBACK_URL = "/api/scan";
 
@@ -18,6 +22,25 @@ const report = document.querySelector("#report-content");
 const reportState = document.querySelector("#report-state");
 
 const byId = (id) => document.getElementById(id);
+
+function isSelfProxyEndpoint(endpoint) {
+  if (!endpoint) return false;
+  try {
+    const url = new URL(endpoint, window.location.href);
+    const isLegacyAnalyzeRoute = url.pathname.replace(/\/+$/, "") === "/analyze";
+    const pointsToThisApp = url.origin === window.location.origin;
+    const pointsToLegacyRenderEndpoint =
+      url.origin === "https://veyl.onrender.com";
+    const isKnownSelfProxy =
+      isLegacyAnalyzeRoute && (pointsToThisApp || pointsToLegacyRenderEndpoint);
+    if (isKnownSelfProxy && SAVED_ENDPOINT_URL === endpoint) {
+      localStorage.removeItem("LINKGUARD_API_URL");
+    }
+    return isKnownSelfProxy;
+  } catch {
+    return false;
+  }
+}
 
 
 function showError(message) {
@@ -396,4 +419,3 @@ form.addEventListener("submit", async (event) => {
     button.querySelector(".button-label").textContent = "Inspect Link Safety";
   }
 });
-
